@@ -18,7 +18,7 @@ func main() {
 		fmt.Println("reload")
 		v := 1
 		return &v, nil
-	})
+	}, loopload.WithReloadTime(time.Second*10))
 	go func() {
 		time.Sleep(1e9)
 		a := l.Get(context.Background())

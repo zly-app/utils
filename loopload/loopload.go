@@ -6,7 +6,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/zly-app/zapp/component/metrics"
 	"github.com/zly-app/zapp/core"
 	"github.com/zly-app/zapp/filter"
 	"github.com/zly-app/zapp/handler"
@@ -18,11 +17,10 @@ import (
 type loadFunc[T any] func(ctx context.Context) (T, error)
 
 type LoopLoad[T any] struct {
-	name        string
-	metricsName string
-	value       *zutils.AtomicValue[T]
-	loadFn      loadFunc[T]
-	opts        *options
+	name   string
+	value  *zutils.AtomicValue[T]
+	loadFn loadFunc[T]
+	opts   *options
 
 	done       chan struct{}
 	startState int32 // 0=未启动, 1=已启动
@@ -30,15 +28,12 @@ type LoopLoad[T any] struct {
 }
 
 func New[T any](name string, loadFn loadFunc[T], opts ...Option) *LoopLoad[T] {
-	metricsName := "loopload_" + name
-	metrics.RegistryCounter(metricsName, "", metrics.Labels{"name": name}, "code_type")
 	initV := new(T)
 	ret := &LoopLoad[T]{
-		name:        name,
-		metricsName: metricsName,
-		value:       zutils.NewAtomic[T](*initV),
-		loadFn:      loadFn,
-		opts:        newOptions(opts),
+		name:   name,
+		value:  zutils.NewAtomic[T](*initV),
+		loadFn: loadFn,
+		opts:   newOptions(opts),
 
 		done:       make(chan struct{}, 0),
 		startState: 0,
@@ -87,10 +82,7 @@ func (l *LoopLoad[T]) start(app core.IApp) error {
 	return nil
 }
 func (l *LoopLoad[T]) close() {
-	if !atomic.CompareAndSwapInt32(&l.startState, 1, 0) {
-		return
-	}
-
+	atomic.StoreInt32(&l.loadState, 0)
 	l.done <- struct{}{}
 	<-l.done
 }
@@ -106,29 +98,18 @@ func (l *LoopLoad[T]) Load(ctx context.Context) error {
 }
 
 func (l *LoopLoad[T]) load(ctx context.Context) error {
-	var ret T
 	err := utils.Recover.WrapCall(func() error {
-		res, err := l.loadFn(ctx)
-		ret = res
+		var ret T
+		var err error
+		ctx, chain := filter.GetClientFilter(ctx, "loopload", l.name, "Load")
+		_, err = chain.Handle(ctx, nil, func(ctx context.Context, _ interface{}) (interface{}, error) {
+			ret, err = l.loadFn(ctx)
+			return ret, nil
+		})
+		l.value.Set(ret)
 		return err
 	})
-	if err != nil {
-		switch err {
-		case context.DeadlineExceeded, context.Canceled:
-			metrics.CounterWithLabelValue(l.metricsName, "exception")
-			return err
-		}
-
-		if utils.Recover.IsRecoverError(err) {
-			metrics.CounterWithLabelValue(l.metricsName, "exception")
-		} else {
-			metrics.CounterWithLabelValue(l.metricsName, "fail")
-		}
-		return err
-	}
-	metrics.CounterWithLabelValue(l.metricsName, "success")
-	l.value.Set(ret)
-	return nil
+	return err
 }
 
 func (l *LoopLoad[T]) Get(ctx context.Context) T {
