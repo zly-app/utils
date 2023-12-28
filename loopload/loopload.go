@@ -1,19 +1,21 @@
 package loopload
 
 import (
+	"context"
 	"errors"
 	"sync/atomic"
 	"time"
 
 	"github.com/zly-app/zapp/component/metrics"
 	"github.com/zly-app/zapp/core"
+	"github.com/zly-app/zapp/filter"
 	"github.com/zly-app/zapp/handler"
 	"github.com/zly-app/zapp/pkg/utils"
 	"github.com/zlyuancn/zutils"
 	"go.uber.org/zap"
 )
 
-type loadFunc[T any] func() (T, error)
+type loadFunc[T any] func(ctx context.Context) (T, error)
 
 type LoopLoad[T any] struct {
 	name        string
@@ -29,7 +31,7 @@ type LoopLoad[T any] struct {
 
 func New[T any](name string, loadFn loadFunc[T], opts ...Option) *LoopLoad[T] {
 	metricsName := "loopload_" + name
-	metrics.RegistryCounter(metricsName, "", metrics.Labels{"name": name}, "")
+	metrics.RegistryCounter(metricsName, "", metrics.Labels{"name": name}, "code_type")
 	initV := new(T)
 	ret := &LoopLoad[T]{
 		name:        name,
@@ -63,7 +65,7 @@ func (l *LoopLoad[T]) start(app core.IApp) error {
 	defer atomic.StoreInt32(&l.loadState, 1)
 
 	// 立即加载
-	err := l.load()
+	err := l.load(context.Background())
 	if err != nil {
 		return err
 	}
@@ -73,7 +75,7 @@ func (l *LoopLoad[T]) start(app core.IApp) error {
 		for {
 			select {
 			case <-t.C:
-				_ = l.Load()
+				_ = l.Load(context.Background())
 			case <-l.done:
 				t.Stop()
 				l.done <- struct{}{}
@@ -94,29 +96,47 @@ func (l *LoopLoad[T]) close() {
 }
 
 // 立即加载
-func (l *LoopLoad[T]) Load() error {
+func (l *LoopLoad[T]) Load(ctx context.Context) error {
 	if !atomic.CompareAndSwapInt32(&l.loadState, 1, 2) {
 		return nil
 	}
 	defer atomic.StoreInt32(&l.loadState, 1)
 
-	return l.load()
+	return l.load(ctx)
 }
 
-func (l *LoopLoad[T]) load() error {
+func (l *LoopLoad[T]) load(ctx context.Context) error {
 	var ret T
 	err := utils.Recover.WrapCall(func() error {
-		res, err := l.loadFn()
+		res, err := l.loadFn(ctx)
 		ret = res
 		return err
 	})
 	if err != nil {
+		switch err {
+		case context.DeadlineExceeded, context.Canceled:
+			metrics.CounterWithLabelValue(l.metricsName, "exception")
+			return err
+		}
+
+		if utils.Recover.IsRecoverError(err) {
+			metrics.CounterWithLabelValue(l.metricsName, "exception")
+		} else {
+			metrics.CounterWithLabelValue(l.metricsName, "fail")
+		}
 		return err
 	}
+	metrics.CounterWithLabelValue(l.metricsName, "success")
 	l.value.Set(ret)
 	return nil
 }
 
-func (l *LoopLoad[T]) Get() T {
-	return l.value.Get()
+func (l *LoopLoad[T]) Get(ctx context.Context) T {
+	ctx, chain := filter.GetClientFilter(ctx, "loopload", l.name, "Get")
+	var result T
+	_, _ = chain.Handle(ctx, nil, func(ctx context.Context, _ interface{}) (rsp interface{}, err error) {
+		result = l.value.Get()
+		return result, nil
+	})
+	return result
 }
