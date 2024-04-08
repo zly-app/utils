@@ -57,13 +57,14 @@ func (l *LoopLoad[T]) start(app core.IApp) error {
 	if !atomic.CompareAndSwapInt32(&l.loadState, 0, 2) {
 		return errors.New("loadState!=0")
 	}
-	defer atomic.StoreInt32(&l.loadState, 1)
 
 	// 立即加载
 	err := l.load(context.Background())
 	if err != nil {
+		atomic.StoreInt32(&l.loadState, 0)
 		return err
 	}
+	atomic.StoreInt32(&l.loadState, 1)
 
 	app.GetComponent().GetGPool().Go(func() error {
 		t := time.NewTicker(l.opts.reloadTime)
@@ -85,6 +86,7 @@ func (l *LoopLoad[T]) close() {
 	atomic.StoreInt32(&l.loadState, 0)
 	l.done <- struct{}{}
 	<-l.done
+	atomic.StoreInt32(&l.loadState, 0)
 }
 
 // 立即加载
