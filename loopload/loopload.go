@@ -106,9 +106,12 @@ func (l *LoopLoad[T]) load(ctx context.Context) error {
 		ctx, chain := filter.GetClientFilter(ctx, "loopload", l.name, "Load")
 		_, err = chain.Handle(ctx, nil, func(ctx context.Context, _ interface{}) (interface{}, error) {
 			ret, err = l.loadFn(ctx)
-			return ret, err
+			if err != nil {
+				return nil, err
+			}
+			l.value.Set(ret)
+			return ret, nil
 		})
-		l.value.Set(ret)
 		return err
 	})
 	return err
