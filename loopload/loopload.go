@@ -43,7 +43,7 @@ func New[T any](name string, loadFn loadFunc[T], opts ...Option) *LoopLoad[T] {
 	handler.AddHandler(handler.BeforeStartHandler, func(app core.IApp, handlerType handler.HandlerType) {
 		err := ret.start(app)
 		if err != nil {
-			app.Fatal("loopload start err", zap.String("name", "name"), zap.Error(err))
+			app.Fatal("loopload start err", zap.String("name", name), zap.Error(err))
 		}
 	})
 	handler.AddHandler(handler.BeforeExitHandler, func(app core.IApp, handlerType handler.HandlerType) {
