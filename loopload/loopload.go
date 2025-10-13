@@ -22,9 +22,8 @@ type LoopLoad[T any] struct {
 	loadFn loadFunc[T]
 	opts   *options
 
-	done       chan struct{}
-	startState int32 // 0=未启动, 1=已启动
-	loadState  int32 // 0=未加载, 1=加载成功, 2=再次加载中
+	done      chan struct{}
+	loadState int32 // 0=未加载, 1=加载成功, 2=再次加载中, 3=已停止
 }
 
 func New[T any](name string, loadFn loadFunc[T], opts ...Option) *LoopLoad[T] {
@@ -35,9 +34,8 @@ func New[T any](name string, loadFn loadFunc[T], opts ...Option) *LoopLoad[T] {
 		loadFn: loadFn,
 		opts:   newOptions(opts),
 
-		done:       make(chan struct{}, 0),
-		startState: 0,
-		loadState:  0,
+		done:      make(chan struct{}, 0),
+		loadState: 0,
 	}
 
 	handler.AddHandler(handler.BeforeStartHandler, func(app core.IApp, handlerType handler.HandlerType) {
@@ -83,10 +81,19 @@ func (l *LoopLoad[T]) start(app core.IApp) error {
 	return nil
 }
 func (l *LoopLoad[T]) close() {
-	atomic.StoreInt32(&l.loadState, 0)
+	ok := atomic.CompareAndSwapInt32(&l.loadState, 1, 3)
+	if !ok {
+		ok = atomic.CompareAndSwapInt32(&l.loadState, 2, 3)
+	}
+	if !ok { // 这里再试一次, 可能前面两次正好有多线程将状态从 2 改为 1
+		ok = atomic.CompareAndSwapInt32(&l.loadState, 1, 3)
+	}
+	if !ok {
+		return
+	}
+
 	l.done <- struct{}{}
 	<-l.done
-	atomic.StoreInt32(&l.loadState, 0)
 }
 
 // 立即加载
