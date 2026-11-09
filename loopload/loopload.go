@@ -8,15 +8,14 @@ import (
 
 	"github.com/zly-app/zapp/core"
 	"github.com/zly-app/zapp/filter"
-	"github.com/zly-app/zapp/handler"
 	"github.com/zly-app/zapp/pkg/utils"
 	"github.com/zlyuancn/zutils"
-	"go.uber.org/zap"
 )
 
 type loadFunc[T any] func(ctx context.Context) (T, error)
 
 type LoopLoad[T any] struct {
+	app    core.IApp
 	name   string
 	value  *zutils.AtomicValue[T]
 	loadFn loadFunc[T]
@@ -26,9 +25,11 @@ type LoopLoad[T any] struct {
 	loadState int32 // 0=未加载, 1=加载成功, 2=再次加载中, 3=已停止
 }
 
-func New[T any](name string, loadFn loadFunc[T], opts ...Option) *LoopLoad[T] {
+// New 创建周期加载器。Start 与 Close 由组合根显式调用，不再有包级 handler 注册。
+func New[T any](app core.IApp, name string, loadFn loadFunc[T], opts ...Option) *LoopLoad[T] {
 	initV := new(T)
-	ret := &LoopLoad[T]{
+	return &LoopLoad[T]{
+		app:    app,
 		name:   name,
 		value:  zutils.NewAtomic[T](*initV),
 		loadFn: loadFn,
@@ -37,21 +38,10 @@ func New[T any](name string, loadFn loadFunc[T], opts ...Option) *LoopLoad[T] {
 		done:      make(chan struct{}, 0),
 		loadState: 0,
 	}
-
-	handler.AddHandler(handler.BeforeStartHandler, func(app core.IApp, handlerType handler.HandlerType) {
-		err := ret.start(app)
-		if err != nil {
-			app.Fatal("loopload start err", zap.String("name", name), zap.Error(err))
-		}
-	})
-	handler.AddHandler(handler.BeforeExitHandler, func(app core.IApp, handlerType handler.HandlerType) {
-		ret.close()
-	})
-	return ret
 }
 
-// 启动
-func (l *LoopLoad[T]) start(app core.IApp) error {
+// Start 立即加载一次并启动周期刷新
+func (l *LoopLoad[T]) Start() error {
 	if !atomic.CompareAndSwapInt32(&l.loadState, 0, 2) {
 		return errors.New("loadState!=0")
 	}
@@ -64,7 +54,7 @@ func (l *LoopLoad[T]) start(app core.IApp) error {
 	}
 	atomic.StoreInt32(&l.loadState, 1)
 
-	app.GetComponent().GetGPool().Go(func() error {
+	l.app.GetComponent().GetGPool().Go(func() error {
 		t := time.NewTicker(l.opts.reloadTime)
 		for {
 			select {
@@ -80,7 +70,8 @@ func (l *LoopLoad[T]) start(app core.IApp) error {
 
 	return nil
 }
-func (l *LoopLoad[T]) close() {
+// Close 停止周期刷新
+func (l *LoopLoad[T]) Close() {
 	ok := atomic.CompareAndSwapInt32(&l.loadState, 1, 3)
 	if !ok {
 		ok = atomic.CompareAndSwapInt32(&l.loadState, 2, 3)

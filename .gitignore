@@ -1,0 +1,5 @@
+# 工作区约定：所有临时产物放在 tmp/ 下
+tmp/
+.idea/
+.vscode/
+*.exe
